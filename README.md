@@ -4,17 +4,19 @@ This repository provides a Proof of Concept (PoC) and production reference for f
 
 ## How the Architecture Works (ACME & Certbot)
 
-This automation is powered by the **ACME protocol** (Automated Certificate Management Environment). The workflow relies on two main components talking to each other:
+This automation is powered by the **ACME protocol** (Automated Certificate Management Environment). The workflow relies on two main components communicating with each other:
 
-1. **The Web Server (Client):** We use **Certbot** running on an Ubuntu VM with NGINX. Certbot acts as our automated agent.
-2. **The Certificate Authority (CA):** The server that issues the certificate. In our local test, this is a simulated CA called **Pebble**. In production, this is a commercial CA like **Sectigo** or **Let's Encrypt**.
+1. **The Web Server (Client):** We use **Certbot** running on an Ubuntu VM with NGINX. Certbot acts as the automated ACME client.
+2. **The Certificate Authority (CA):** The server that issues certificates. In our local test environment, this is **Pebble**. In production, it would be a commercial CA such as **Sectigo** or **Let's Encrypt**.
 
-**The Process:**
-* Certbot sends a request to the CA asking for a certificate for a specific domain (e.g., `app.domain.com`).
-* The CA issues an HTTP-01 Challenge: *"Prove you own this domain by placing a specific secret token on your web server."*
-* Certbot automatically spins up or reconfigures NGINX to host that token.
-* The CA reaches out over the network, finds the token, verifies ownership, and issues the cryptographic certificate.
-* Certbot locks the new certificate into NGINX and restarts the web server.
+### Certificate Issuance Workflow
+
+1. Certbot requests a certificate for a domain (e.g., `app.domain.com`).
+2. The CA issues an **HTTP-01 Challenge**, asking the client to prove ownership of the domain.
+3. Certbot automatically configures NGINX to serve the required challenge token.
+4. The CA verifies the token by connecting to the web server.
+5. Once verified, the CA issues the TLS certificate.
+6. Certbot installs the certificate into NGINX and reloads the web server.
 
 ---
 
@@ -22,62 +24,118 @@ This automation is powered by the **ACME protocol** (Automated Certificate Manag
 
 ```text
 tls-cert-automation-ubuntu/
-├── 1-local-simulator/ # The active Proof of Concept using a local Docker CA
-│ ├── docker-compose.yml
-│ ├── setup-trust.sh
-│ └── deploy-cert.sh
-├── 2-production-reference/ # Production-ready artifact for live deployment
-│ └── cloud-init-setup.sh
+├── 1-local-simulator/
+│   ├── docker-compose.yml
+│   ├── setup-trust.sh
+│   └── deploy-cert.sh
+├── 2-production-reference/
+│   └── cloud-init-setup.sh
 └── README.md
+```
 
-1. Local Simulator Environment
-The 1-local-simulator directory contains a self-contained testing environment. Because we cannot test certificate issuance against a real public CA from a private VM, we run our own CA locally.
+---
 
-The Environment:
+## 1. Local Simulator Environment
 
-Host: Ubuntu Linux VM
-Web Server: NGINX
-Local CA: Pebble (Let's Encrypt's official testing CA), running inside a Docker container.
-How to Run the Simulator
-Prerequisites: You must have Docker, Docker Compose, and NGINX installed on the Ubuntu host.
+The `1-local-simulator` directory contains a self-contained testing environment.
 
-Step 1: Start the Local CA
+Since a private Ubuntu VM cannot complete ACME validation against a public Certificate Authority, this project uses a local CA simulator instead.
 
-Spin up the Pebble server in the background. It will expose its API on port 14000.
+### Environment
 
-Bash 
+* **Host:** Ubuntu Linux VM
+* **Web Server:** NGINX
+* **Certificate Authority:** Pebble (Let's Encrypt's official ACME testing server)
+* **Container Runtime:** Docker
+
+### Prerequisites
+
+Install the following before running the simulator:
+
+* Docker
+* Docker Compose
+* NGINX
+
+### Step 1 – Start the Local CA
+
+Launch Pebble in the background.
+
+```bash
 cd 1-local-simulator
 sudo docker compose up -d
+```
 
-Step 2: Establish the Trust Bridge
+Pebble will expose its ACME API on **port 14000**.
 
-Because Pebble is a private, simulated CA, your Ubuntu host does not trust it by default. This script downloads Pebble's management root certificate and injects it into the Ubuntu OS so Certbot can connect securely.
+### Step 2 – Establish the Trust Bridge
 
-Bash 
+Because Pebble is a private Certificate Authority, Ubuntu does not trust it by default.
+
+Run:
+
+```bash
 ./setup-trust.sh
+```
 
-Step 3: Execute the Automation
+This script downloads Pebble's root certificate and adds it to Ubuntu's trusted certificate store.
 
-Run the provisioning script. This forces Certbot to request a certificate for app.local.com, bypass prompts, and temporarily answer the CA's challenge on port 5002 (due to Docker routing).
+### Step 3 – Execute the Automation
 
-Bash 
+Run the provisioning script:
+
+```bash
 ./deploy-cert.sh
+```
 
-Step 4: Verify
+This script:
 
-Ping the local web server to verify NGINX is now serving traffic securely over HTTPS.
+* Requests a certificate for `app.local.com`
+* Runs Certbot non-interactively
+* Responds to the HTTP-01 challenge
+* Installs the issued certificate into NGINX
 
-Bash 
+### Step 4 – Verify
+
+Verify that HTTPS is working:
+
+```bash
 curl -kI https://localhost
+```
 
-(You should receive an HTTP/1.1 200 OK header).
+Expected output:
 
-2. Production Reference
-The 2-production-reference directory contains the blueprint for taking this local automation into a live enterprise environment.
+```text
+HTTP/1.1 200 OK
+```
 
-How to Use the Production Script
-Do not run this script directly on your local machine. The cloud-init-setup.sh script is designed to be injected into a live cloud environment via an Infrastructure as Code tool like Terraform.
+---
 
-Automated Bootstrapping: When Terraform builds a fresh Ubuntu VM, it passes this script in as user-data so it runs automatically the moment the server turns on.
-Secret Injection: In a live environment using a commercial CA like Sectigo, you must authenticate using EAB (External Account Binding) keys. Terraform pulls these keys from a secure vault (like AWS Secrets Manager) and injects them into the Certbot command inside the script.
-Execution: The script installs dependencies (NGINX, snapd, Certbot), reaches out to the live Sectigo API, passes the HTTP-01 challenge over public port 80, and secures the server automatically without human input.
+## 2. Production Reference
+
+The `2-production-reference` directory contains a production-oriented reference for deploying this automation into a cloud environment.
+
+### How the Production Script Works
+
+> **Note:** Do not execute `cloud-init-setup.sh` directly on your local machine.
+
+Instead, it is intended to be passed into a newly created Ubuntu VM as **cloud-init user data**, typically through an Infrastructure-as-Code tool such as Terraform.
+
+During deployment:
+
+1. **Automated Bootstrapping**
+
+   * Terraform creates a new Ubuntu VM.
+   * It passes `cloud-init-setup.sh` as the VM's startup script.
+
+2. **Secret Injection**
+
+   * Production CAs such as Sectigo require **External Account Binding (EAB)** credentials.
+   * Terraform retrieves these credentials from a secure secret manager (for example, AWS Secrets Manager or HashiCorp Vault).
+   * The credentials are injected into the script during provisioning rather than being stored in source control.
+
+3. **Automatic Certificate Provisioning**
+
+   * The script installs NGINX, Snap, and Certbot.
+   * Certbot requests a certificate from the production CA.
+   * The CA validates ownership using the HTTP-01 challenge over port 80.
+   * The certificate is automatically installed into NGINX without manual intervention.
