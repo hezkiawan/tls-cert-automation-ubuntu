@@ -1,0 +1,15 @@
+version: '3'
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    command: -config test/config/pebble-config.json -strict=false
+    ports:
+      - "14000:14000"  # The ACME API Port
+      - "15000:15000"  # The Management Port
+    environment:
+      - PEBBLE_VA_NOSLEEP=1
+      - PEBBLE_WFE_NONCEREJECT=0
+    extra_hosts:
+      # LOCAL BYPASS: Tells the isolated container how to route 
+      # verification requests back to the host VM's NGINX server.
+      - "app.local.com:host-gateway"
